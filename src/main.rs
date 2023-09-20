@@ -1,3 +1,41 @@
+#[derive(Debug)]
+enum MoveParseError {
+    LengthNotTwo,
+    BadRank(char),
+    BadFile(char),
+}
+
+/// Parses coordinates in the form of "a6" or "B4".
+fn parse_coordinate(coord: &str) -> Result<u32, MoveParseError> {
+    let mut chars = coord.chars();
+    let Some(first_char) = chars.next() else {
+        return Err(MoveParseError::LengthNotTwo)
+    };
+    let Some(second_char) = chars.next() else {
+        return Err(MoveParseError::LengthNotTwo)
+    };
+
+    if let Some(_) = chars.next() {
+        return Err(MoveParseError::LengthNotTwo)
+    }
+
+    let square;
+
+    if second_char >= '1' && second_char <= '9' {
+        square = ((second_char as u32 - '1' as u32 ) << 3) + 7;
+    } else {
+        return Err(MoveParseError::BadRank(second_char))
+    }
+
+    if first_char >= 'A' && first_char <= 'H' {
+        return Ok(square  + 'A' as u32 - first_char as u32);
+    } else if first_char >= 'a' && first_char <= 'h' {
+        return Ok(square  + 'a' as u32 - first_char as u32);
+    } else {
+        return Err(MoveParseError::BadFile(first_char))
+    };
+
+}
 
 #[derive(Copy, Clone, Default)]
 struct SMask {
@@ -54,7 +92,9 @@ fn anti_diagonal_mask(position: i32) -> u64 {
 struct MoveSet {
     knights: [u64; 64],
     sliding: [[SMask; 4]; 64],
-    kings: [u64; 64]
+    kings: [u64; 64],
+    white_pawns: [u64; 64],
+    black_pawns: [u64; 64],
 }
 
 impl MoveSet {
@@ -63,6 +103,8 @@ impl MoveSet {
             knights: [0; 64],
             sliding: [[Default::default(); 4]; 64],
             kings: [0; 64],
+            white_pawns: [0; 64],
+            black_pawns: [0; 64]
         };
         fn maybe_add_move(rank: i32, file: i32) -> u64 {
             if rank >= 8 || rank < 0 || file >= 8 || file < 0 {
@@ -105,6 +147,17 @@ impl MoveSet {
             k |= maybe_add_move(rank, file + 1);
             k |= maybe_add_move(rank, file - 1);
             result.kings[i as usize] = k;
+
+            let mut wp = 0;
+            wp |= maybe_add_move(rank + 1, file - 1);
+            wp |= maybe_add_move(rank + 1, file + 1);
+            result.white_pawns[i as usize] = wp;
+
+            let mut bp = 0;
+            bp |= maybe_add_move(rank - 1, file - 1);
+            bp |= maybe_add_move(rank - 1, file + 1);
+            result.black_pawns[i as usize] = bp;
+
         }
         return result;
     }
@@ -142,7 +195,7 @@ impl ChessTeam {
 }
 
 #[derive(Debug)]
-struct Moves {
+struct Move {
     result: ChessState,
     from: u8,
     to: u8
@@ -219,13 +272,21 @@ fn get_king_moves<F: MovesHandler>(mut moves_handler: F, move_set: &MoveSet, pos
     moves_handler
 }
 
-fn get_pawns_moves<F: MovesHandler>(mut moves_handler: F, is_white_turn: bool, positions: u64, friendly_occupied: u64, occupied: u64) -> F {
+fn get_pawns_moves<F: MovesHandler>(mut moves_handler: F, move_set: &MoveSet, positions: u64, friendly_occupied: u64, occupied: u64, is_white_turn: bool) -> F {
     for_each_piece(positions, |i|{
         // TODO: handle en-passant.
 
-        let capture_moves = occupied & if is_white_turn { 5 << (i + 7) } else { 5 << (i - 7) };
-        let piece_moves = if is_white_turn { 1 << (i + 8) } else { 1 << (i - 8) };
-        moves_handler(i, (piece_moves | capture_moves) & !friendly_occupied);
+        let capture_moves = occupied & if is_white_turn {
+            move_set.white_pawns[i]
+        } else {
+            move_set.black_pawns[i]
+        };
+        let piece_moves = if is_white_turn {
+            1 << (i + 8) | if (i >> 3) == 1 {1 << (i + 16)} else {0}
+        } else {
+            1 << (i - 8) | if (i >> 3) == 6 {1 << (i - 16)} else {0}
+        };
+        moves_handler(i, (piece_moves & !occupied) | (capture_moves & !friendly_occupied));
     });
     moves_handler
 }
@@ -236,7 +297,7 @@ fn get_all_moves<F: MovesHandler>(mut moves_handler: F, is_white_turn: bool, mov
     moves_handler = get_bishops_moves(moves_handler, move_set, friends.bishops, friendly_occupied, occupied);
     moves_handler = get_queens_moves(moves_handler, move_set, friends.queens,  friendly_occupied, occupied);
     moves_handler = get_king_moves(moves_handler, move_set, friends.king,    friendly_occupied);
-    moves_handler = get_pawns_moves(moves_handler, is_white_turn, friends.pawns, friendly_occupied, occupied);
+    moves_handler = get_pawns_moves(moves_handler, move_set, friends.pawns, friendly_occupied, occupied, is_white_turn);
     moves_handler
 }
 
@@ -310,19 +371,27 @@ impl ChessState {
             is_white_turn: true,
         }
     }
-    fn get_moves(self: &ChessState, move_set: &MoveSet) -> Vec<Moves> {
+    fn get_attacker(&self) -> &ChessTeam {
+        if self.is_white_turn {
+            &self.white
+        } else {
+            &self.black
+        }
+    }
+    fn get_defender(&self) -> &ChessTeam {
+        if self.is_white_turn {
+            &self.black
+        } else {
+            &self.white
+        }
+    }
+    fn get_moves(self: &ChessState, move_set: &MoveSet) -> Vec<Move> {
         let is_white_turn = self.is_white_turn;
 
-        let friends = if is_white_turn {
-            &self.white
-        } else {
-            &self.black
-        };
-        let enemies = if is_white_turn {
-            &self.black
-        } else {
-            &self.white
-        };
+        // TODO: Factor into ChessState
+        let friends = self.get_attacker();
+        let enemies = self.get_defender();
+
         let friendly_occupied = friends.get_occupancy();
         let enemy_occupied = enemies.get_occupancy();
         let occupied = friendly_occupied | enemy_occupied;
@@ -332,11 +401,26 @@ impl ChessState {
             for_each_piece(moves, |to| {
                 let mut result = self.clone();
                 result.move_piece(from as u8, to as u8);
-                total_moves.push(Moves {
-                    result,
-                    from: from as u8,
-                    to: to as u8,
-                });
+                let is_white_turn = result.is_white_turn;
+
+                let attacker = result.get_attacker();
+                let defender = result.get_defender();
+                let attacker_occupied = attacker.get_occupancy();
+                let defender_occupied = defender.get_occupancy();
+                let occupied = attacker_occupied | defender_occupied;
+
+                let mut in_check = 0u64;
+                let king_checker = |_from: usize, moves: u64| {
+                    in_check |= moves & defender.king;
+                };
+                _ = get_all_moves(king_checker, is_white_turn, move_set, attacker, attacker_occupied, occupied);
+                if in_check == 0 {
+                    total_moves.push(Move {
+                        result,
+                        from: from as u8,
+                        to: to as u8,
+                    });
+                }
             })
         };
 
@@ -383,18 +467,89 @@ fn print_ascii_board(ascii: &[u8]) {
     println!("  --------\n  ABCDEFGH");
 }
 
+fn read_valid_move(moves: &[Move]) -> Option<&Move> {
+    loop {
+        let stdin = std::io::stdin();
+        let mut input = String::new();
+        if let Err(e) = stdin.read_line(&mut input) {
+            println!("Could not read input: {e}");
+            return None
+        }
+        input = input.replace(&['\n', '\r', ' '], "");
+        if input == "help" {
+            println!("Valid moves: {:#?}", moves);
+            continue
+        }
+        if input.len() < 4 {
+            println!("Please write in the form of: a2 a3");
+            continue
+        }
+
+        let from = &input[0..2];
+        let to = &input[2..4];
+        let square = match parse_coordinate(from) {
+            Err(e) => {println!("Invalid coordinate {from}: {:#?}", e); continue}
+            Ok(square) => square
+        } as u8;
+        let square_dest = match parse_coordinate(to) {
+            Err(e) => {println!("Invalid destination {from}: {:#?}", e); continue}
+            Ok(square) => square
+        } as u8;
+        println!("Trying to move from: {square} to {square_dest}");
+        for mov in moves {
+            if mov.from == square && mov.to == square_dest {
+                return Some(mov)
+            }
+        }
+        println!("Invalid move, try another");
+    }
+}
+
+/// Only used for moving pieces during tests.
+fn run_move(state: &mut ChessState, move_set: &MoveSet, mov: &str) {
+    let from = parse_coordinate(&mov[0..2]).unwrap() as u8;
+    let to = parse_coordinate(&mov[2..4]).unwrap() as u8;
+    let moves = state.get_moves(move_set);
+    for mov in moves {
+        if mov.from == from && mov.to == to {
+            *state = mov.result;
+        }
+    }
+}
+
 fn main() {
     let move_set = MoveSet::new();
     let mut state = ChessState::standard();
 
+    /*
+    // Fools mate
+    run_move(&mut state, &move_set, "f2f3");
+    run_move(&mut state, &move_set, "e7e5");
+    run_move(&mut state, &move_set, "g2g4");
+    run_move(&mut state, &move_set, "d8h4");
+    */
+
+
+
+    /*let mut state = ChessState::default();
+    state.is_white_turn = true;
+    state.white.king = 1 << (5+4*8);
+    state.white.pawns |= 1 << (6+4*8);
+    state.white.pawns |= 1 << (6+5*8);
+    state.white.pawns |= 1 << (3+3*8);
+    state.black.pawns |= 1 << (4+4*8);
+    state.black.pawns |= 1 << (5+5*8);
+    state.black.pawns |= 1 << (5+6*8);*/
+
+    /*
     state.move_piece(8, 16);
     state.move_piece(63, 25);
     state.move_piece(15, 24);
-    //state.move_piece(7, 24);
     state.move_piece(63-8, 63-16);
+    state.move_piece(3, 3+8*4);
+    state.move_piece(8*6, 8*5);
+    */
 
-    //state.white.queens |= 0x00_00_00_10_00_00_00_00;
-    //state.white.bishops |= 0x00_00_00_10_00_00_00_00;
 
     let ascii = state.to_ascii();
     print_ascii_board(&ascii);
@@ -409,13 +564,41 @@ fn main() {
     }*/
 
     let moves = state.get_moves(&move_set);
-    println!("Moves: {:#?}", moves);
-    for m in moves {
+    //println!("Moves: {:#?}", moves);
+    for m in &moves {
         fill_pieces(&mut other_ascii, 'X' as u8, 1 << m.to);
+    }
+    print_ascii_board(&other_ascii);
+
+    /*for m in &moves {
+        if m.to == 4*8+5 {
+            println!("Takes the king!: {:#?}", m);
+            fill_pieces(&mut other_ascii, 'Z' as u8, 1 << m.to);
+            fill_pieces(&mut other_ascii, 'G' as u8, 1 << m.from);
+        }
+    }*/
+
+    loop {
+        let ascii = state.to_ascii();
+        for _ in 0..64 {
+            println!("");
+        }
+        print_ascii_board(&ascii);
+        let turn = if state.is_white_turn { "white" } else { "black "};
+        println!("It is {turn}s turn to move");
+        let moves = state.get_moves(&move_set);
+        if moves.is_empty() {
+            println!("Game Over");
+            break
+        }
+
+        let Some(mv) = read_valid_move(&moves) else { break };
+        state = mv.result;
+
     }
 
     //fill_pieces(&mut other_ascii, '.' as u8, state.white.get_occupancy() | state.black.get_occupancy());
 
-    print_ascii_board(&other_ascii);
+    //print_ascii_board(&other_ascii);
 
 }
