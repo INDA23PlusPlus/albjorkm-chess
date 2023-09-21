@@ -1,5 +1,5 @@
 [package]
-name = "libchess"
+name = "scrappy-chess"
 version = "0.1.0"
 edition = "2021"
 

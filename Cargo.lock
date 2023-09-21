@@ -3,5 +3,5 @@
 version = 3
 
 [[package]]
-name = "libchess"
+name = "scrappy-chess"
 version = "0.1.0"
