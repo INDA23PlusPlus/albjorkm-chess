@@ -5,6 +5,8 @@
 //! - no support for 50-draw
 //! - no support for castling
 
+use self::chess::parse_coordinate;
+
 pub mod chess;
 
 /// Extra functions used mainly by tests.
@@ -73,6 +75,143 @@ pub mod util {
     }
 }
 
+/// The recommended way to use the Chess engine.
+pub struct ChessGame {
+    move_set: chess::MoveSet,
+    state: chess::ChessState,
+    moves: Vec<chess::Move>,
+}
+
+/// Iterates over all pieces on a Chess board.
+pub struct PieceIterator<'a> {
+    state: &'a chess::ChessState,
+    piece: char,
+    index: u8,
+}
+
+impl<'a> Iterator for PieceIterator<'a> {
+    type Item = (char, u32, u32);
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.piece == '#' {
+                return None;
+            }
+
+            let (next, pieces) = match self.piece {
+                'K' => ('Q', self.state.white.king),
+                'Q' => ('P', self.state.white.queens),
+                'P' => ('N', self.state.white.pawns),
+                'N' => ('B', self.state.white.knights),
+                'B' => ('R', self.state.white.bishops),
+                'R' => ('k', self.state.white.rooks),
+                'k' => ('q', self.state.black.king),
+                'q' => ('p', self.state.black.queens),
+                'p' => ('n', self.state.black.pawns),
+                'n' => ('b', self.state.black.knights),
+                'b' => ('r', self.state.black.bishops),
+                'r' => ('#', self.state.black.rooks),
+                 _  => ('#', 0)
+            };
+
+            if pieces == 0 {
+                self.index = 0;
+                self.piece = next;
+                continue
+            }
+
+            while self.index < 64 {
+                let index = self.index;
+                let has_piece = (pieces >> index) & 1;
+                self.index += 1;
+                if has_piece == 1 {
+                    let rank = (index >> 3) as u32;
+                    let file = (index & 7) as u32;
+                    return Some((self.piece, rank, file))
+                }
+            }
+
+            self.index = 0;
+            self.piece = next;
+        }
+
+
+    }
+}
+
+// A reason explaining why a move was not allowed.
+#[derive(Debug)]
+pub enum MoveError {
+    /// Provided coordinate was invalid.
+    CoordinateError(chess::CoordinateError),
+
+    /// Input should be (at least) 4 characters.
+    TooShort,
+
+    /// Not allowed by the rules of chess.
+    InvalidMove
+}
+
+impl ChessGame {
+    /// Creates a new Chess game.
+    pub fn new() -> ChessGame {
+        let move_set = chess::MoveSet::new();
+        let state = chess::ChessState::standard();
+        let moves = state.get_moves(&move_set);
+        ChessGame {
+            move_set,
+            state,
+            moves,
+        }
+    }
+    /// Creates an iterator overall pieces.
+    pub fn pieces(&self) -> PieceIterator {
+        PieceIterator {
+            state: &self.state,
+            piece: 'K',
+            index: 0,
+        }
+    }
+
+    /// Returns true if it is whites turn.
+    pub fn is_white_turn(&self) -> bool {
+        return self.state.is_white_turn
+    }
+
+    /// Returns true if the game is over.
+    pub fn is_over(&self) -> bool {
+        return self.moves.is_empty()
+    }
+
+    pub fn moves(&self) -> Vec<String> {
+        self.moves.iter().map(|e|e.to_string()).collect()
+    }
+
+    pub fn play_move(&mut self, move_str: &str) -> Result<(), MoveError> {
+        if move_str.len() < 4 {
+            return Err(MoveError::TooShort)
+        }
+        let from = &move_str[0..2];
+        let to = &move_str[2..4];
+
+        let square = match parse_coordinate(from) {
+            Err(e) => { return Err(MoveError::CoordinateError(e))},
+            Ok(square) => square
+        } as u8;
+        let square_dest = match parse_coordinate(to) {
+            Err(e) => { return Err(MoveError::CoordinateError(e))},
+            Ok(square) => square
+        } as u8;
+
+        for mov in &self.moves {
+            if square == mov.from && square_dest == mov.to {
+                self.state = mov.result;
+                self.moves = self.state.get_moves(&self.move_set);
+                return Ok(());
+            }
+        }
+        Err(MoveError::InvalidMove)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -151,4 +290,19 @@ mod tests {
         assert_eq!(state, new_state);
 
     }
+
+    #[test]
+    fn test_iterator() {
+        let game = super::ChessGame::new();
+        let state = ChessState::standard();
+        let ascii = super::util::state_to_ascii(&state);
+
+        let mut game_ascii = [' ' as u8; 64];
+        for (c, rank, file) in game.pieces() {
+            game_ascii[(63 - rank * 8 - file) as usize] = c as u8;
+        }
+
+        assert_eq!(game_ascii, ascii);
+    }
+
 }

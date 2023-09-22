@@ -24,7 +24,7 @@ pub fn parse_coordinate(coord: &str) -> Result<u32, CoordinateError> {
 
     let square;
 
-    if second_char >= '1' && second_char <= '9' {
+    if second_char >= '1' && second_char <= '8' {
         square = ((second_char as u32 - '1' as u32 ) << 3) + 7;
     } else {
         return Err(CoordinateError::BadRank(second_char))
@@ -223,6 +223,18 @@ pub struct Move {
 
     /// The destination square.
     pub to: u8
+}
+
+fn square_to_coordinate(square: u8) -> String {
+    let rank = square >> 3;
+    let file = square & 7;
+    format!("{}{}", ('a' as u8 + rank) as char, file)
+}
+
+impl ToString for Move {
+    fn to_string(&self) -> String {
+        format!("{}{}", square_to_coordinate(self.from), square_to_coordinate(self.to))
+    }
 }
 
 /// Runs a procedure for each piece inside of a bitboard.
